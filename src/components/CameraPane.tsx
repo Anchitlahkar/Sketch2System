@@ -4,6 +4,7 @@ import { Camera, Mic, MicOff, RefreshCw, Sparkles, Upload, VideoOff } from 'luci
 import { SAMPLE_SKETCHES } from '../data/sampleDiagrams';
 import { SampleSketch } from '../types';
 import { MAX_PROMPT_HINT_LENGTH, SUPPORTED_IMAGE_MIME_TYPES } from '../shared/aiSpec';
+import { downscaleDataUrl, downscaleFile } from '../lib/downscaleImage';
 
 interface CameraPaneProps {
   onCompile: (imageBase64: string, mimeType: string, promptHint: string) => void;
@@ -11,7 +12,10 @@ interface CameraPaneProps {
   isCompiling: boolean;
 }
 
-/** Matches the server's MAX_IMAGE_BYTES so oversized files fail fast, before upload. */
+/**
+ * Ceiling on the *source* file, rejected before we spend time decoding it. What is
+ * actually uploaded is the downscaled version, which is far smaller.
+ */
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const CAPTURE_MIME = 'image/jpeg';
 const CAPTURE_QUALITY = 0.9;
@@ -142,11 +146,14 @@ export const CameraPane: React.FC<CameraPaneProps> = ({ onCompile, onSelectSampl
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        // JPEG rather than PNG: a 1280x720 photo is ~10x smaller, which matters
-        // against the 8MB server limit.
+        // JPEG rather than PNG: a 1280x720 photo is ~10x smaller.
         const dataUrl = canvas.toDataURL(CAPTURE_MIME, CAPTURE_QUALITY);
         setStatusMessage('CAPTURED — COMPILING');
-        compilePreview(dataUrl, CAPTURE_MIME);
+        // Downscale before upload: serverless request bodies are capped well below
+        // the size of a raw frame once base64 inflates it.
+        void downscaleDataUrl(dataUrl)
+          .then((image) => compilePreview(image.dataUrl, image.mimeType))
+          .catch(() => compilePreview(dataUrl, CAPTURE_MIME));
         return;
       }
     }
@@ -173,19 +180,16 @@ export const CameraPane: React.FC<CameraPaneProps> = ({ onCompile, onSelectSampl
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const result = evt.target?.result;
-      if (typeof result !== 'string') {
-        setCameraError('Could not read that file.');
-        return;
-      }
-      setCameraError(null);
-      setStatusMessage(`LOADED: ${file.name.toUpperCase()}`);
-      compilePreview(result, file.type);
-    };
-    reader.onerror = () => setCameraError('Could not read that file.');
-    reader.readAsDataURL(file);
+    void downscaleFile(file)
+      .then((image) => {
+        setCameraError(null);
+        setStatusMessage(`LOADED: ${file.name.toUpperCase()} (${(image.bytes / 1024).toFixed(0)}KB)`);
+        compilePreview(image.dataUrl, image.mimeType);
+      })
+      .catch((err: unknown) => {
+        console.warn('Image processing failed:', err);
+        setCameraError('Could not read that image.');
+      });
   };
 
   // Voice trigger: real Web Speech recognition, off by default. When the browser

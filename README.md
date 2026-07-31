@@ -98,7 +98,7 @@ All variables are optional except `GEMINI_API_KEY`. See [`.env.example`](.env.ex
 | `TRUST_PROXY` | off | Set `true` behind a reverse proxy so rate limiting sees real client IPs. Auto-enabled when `K_SERVICE` is present (Cloud Run). |
 | `RATE_LIMIT_WINDOW_MS` | `300000` | Rate limit window for `/api/compile-sketch`. |
 | `RATE_LIMIT_MAX` | `20` | Max compiles per window per IP. |
-| `GEMINI_TIMEOUT_MS` | `60000` | Aborts a hung upstream request. |
+| `GEMINI_TIMEOUT_MS` | `50000` | Aborts a hung upstream request, below the Vercel function ceiling. |
 
 `.env` is gitignored (`.env*` with a `!.env.example` exception). Keep real keys out of
 version control.
@@ -120,7 +120,7 @@ version control.
 }
 ```
 
-> `gemini_configured` only reports that *a* key is present — it does not validate it.
+> `gemini_configured` reports that a non-placeholder key is set. It does not validate it against Gemini.
 
 ### `POST /api/compile-sketch`
 
@@ -133,7 +133,7 @@ version control.
 }
 ```
 
-Limits: 8 MB decoded image; `image/png`, `image/jpeg`, `image/webp`, `image/heic`,
+Limits: 3 MB decoded image (the client downscales before upload, so this is rarely hit); `image/png`, `image/jpeg`, `image/webp`, `image/heic`,
 `image/heif`.
 
 **Success (200)** — `source` tells you whether this is real:
@@ -165,7 +165,7 @@ Limits: 8 MB decoded image; `image/png`, `image/jpeg`, `image/webp`, `image/heic
 | --- | --- | --- |
 | `invalid_body` / `missing_image` / `invalid_image` / `invalid_hint` | 400 | Malformed request |
 | `unsupported_media_type` | 415 | Image type not in the allowlist |
-| `image_too_large` | 413 | Over 8 MB decoded |
+| `image_too_large` | 413 | Over 3 MB decoded |
 | `rate_limited` | 429 | Includes a `Retry-After` header |
 | `upstream_error` | 502 | Gemini rejected or failed the request |
 | `upstream_timeout` | 504 | Exceeded `GEMINI_TIMEOUT_MS` |
@@ -177,8 +177,11 @@ Clients should read the response body regardless of status code.
 ## Project structure
 
 ```
-server.ts                     Express API, Gemini call, static/SPA serving
+server.ts                     Local / container entry: Express, static + SPA serving
+api/                          Vercel functions (health, compile-sketch)
+Dockerfile                    Container image for Cloud Run
 src/
+  server/handlers.ts          Shared request handling — used by both deploy targets
   App.tsx                     Top-level state: analysis, meta, toasts, tab routing
   types.ts                    SketchAnalysisResult and the API envelope types
   components/
@@ -193,6 +196,7 @@ src/
     graphLayout.ts            Card size, edge geometry, collision-free label placement
     autoLayout.ts             Layered graph layout — the app places nodes, not the model
   lib/
+    downscaleImage.ts         Client-side resize before upload (body-size limits)
     zip.ts                    Dependency-free ZIP writer (store method)
     exportBundle.ts           Builds README/YAML/Mermaid/JSON and triggers download
   data/
@@ -246,6 +250,59 @@ deployment, move it to Redis or enforce limits at the edge.
 
 ## Deployment
 
+Request handling lives in `src/server/handlers.ts` and is shared by the Express server
+and the Vercel functions in `api/`, so the two targets cannot drift apart.
+
+### Vercel
+
+Live at **https://sketch2system.vercel.app**.
+
+```bash
+vercel deploy --prod
+```
+
+`vercel.json` builds the client with Vite, serves `dist/`, routes `/api/*` to the
+functions, and rewrites everything else to `index.html`. The compile function gets
+`maxDuration: 60` because Gemini vision calls on a full-page sketch take 18-28s.
+
+**Set the API key yourself** — never commit it, and do not paste it into a shell that
+gets logged:
+
+```bash
+vercel env add GEMINI_API_KEY production
+```
+
+Then redeploy. Until it is set, the deployment serves clearly-labelled placeholder
+output rather than pretending to work.
+
+> **Before pointing a funded key at a public URL:** `/api/compile-sketch` is
+> unauthenticated and each call costs money. The built-in rate limiter is in-memory, so
+> on serverless it is per-instance and resets on cold start — best-effort, not a
+> guarantee. Turn on
+> [Deployment Protection](https://vercel.com/docs/deployment-protection) or a WAF rule
+> for anything beyond a demo.
+
+### Cloud Run
+
+The Express server is already container-shaped: it reads `PORT`, binds `0.0.0.0`, and
+enables trust-proxy automatically when `K_SERVICE` is present. A `Dockerfile` is
+included.
+
+```bash
+gcloud run deploy sketch2system \
+  --source . \
+  --region asia-south1 \
+  --allow-unauthenticated \
+  --set-secrets GEMINI_API_KEY=gemini-api-key:latest
+```
+
+Store the key in Secret Manager (`--set-secrets`) rather than passing `--set-env-vars`.
+Cloud Run suits this workload better than serverless functions: no request body ceiling,
+a 300s default timeout against Gemini's 18-28s calls, and a single long-lived instance
+where the in-memory rate limiter actually holds.
+
+### Self-hosted
+
 ```bash
 npm run build
 npm start
@@ -254,9 +311,6 @@ npm start
 `npm run build` emits a static client into `dist/` and a bundled CommonJS server at
 `dist/server.cjs`. The server is built with `--packages=external`, so production
 dependencies must be installed alongside it.
-
-On Cloud Run: `PORT` is injected automatically, and `TRUST_PROXY` is enabled for you
-via `K_SERVICE`. Set `GEMINI_API_KEY` as a secret rather than a plain env var.
 
 ---
 

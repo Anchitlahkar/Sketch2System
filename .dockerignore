@@ -1,0 +1,16 @@
+node_modules
+dist
+build
+coverage
+.git
+.github
+.vercel
+.env
+.env.*
+!.env.example
+*.log
+test
+docs
+README.md
+Dockerfile
+.dockerignore

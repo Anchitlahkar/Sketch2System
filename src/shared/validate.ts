@@ -21,8 +21,8 @@ import {
   NodeDetails,
   NodeType,
   SketchAnalysisResult,
-} from '../types';
-import { autoPosition } from './graphLayout';
+} from '../types.js';
+import { autoPosition } from './graphLayout.js';
 
 export class ValidationError extends Error {
   constructor(message: string) {
