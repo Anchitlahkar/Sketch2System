@@ -1,236 +1,362 @@
-import React, { useState } from 'react';
-import { ArchitectureNode, ArchitectureEdge } from '../types';
-import { Globe, Server, Database, Cpu, Layers, ShieldCheck, Box, Sparkles, ZoomIn, ZoomOut, Maximize2, Activity } from 'lucide-react';
+import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  Activity,
+  Box,
+  Cpu,
+  Database,
+  Globe,
+  Layers,
+  Maximize2,
+  Network,
+  Server,
+  ShieldCheck,
+  Sparkles,
+  Workflow,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
+
+import { ArchitectureEdge, ArchitectureNode, NodeType } from '../types';
+import { MIN_LABEL_BUDGET, NODE_H, NODE_W, canvasBounds, edgeGeometry, labelPlacement } from '../shared/graphLayout';
 
 interface NodeCanvasProps {
   nodes: ArchitectureNode[];
   edges: ArchitectureEdge[];
-  onSelectNode?: (node: ArchitectureNode) => void;
+  selectedNodeId: string | null;
+  onSelectNode: (node: ArchitectureNode | null) => void;
 }
 
-export const NodeCanvas: React.FC<NodeCanvasProps> = ({ nodes, edges, onSelectNode }) => {
+const MIN_ZOOM = 0.35;
+const MAX_ZOOM = 2;
+
+const NODE_ICONS: Record<NodeType, React.ReactNode> = {
+  frontend: <Globe className="w-4 h-4" />,
+  gateway: <Layers className="w-4 h-4" />,
+  database: <Database className="w-4 h-4" />,
+  cache: <Cpu className="w-4 h-4" />,
+  auth: <ShieldCheck className="w-4 h-4" />,
+  external: <Sparkles className="w-4 h-4" />,
+  queue: <Workflow className="w-4 h-4" />,
+  service: <Network className="w-4 h-4" />,
+  backend: <Server className="w-4 h-4" />,
+};
+
+const NODE_BADGE_CLASSES: Record<NodeType, string> = {
+  frontend: 'border-blue-500/30 bg-blue-500/10 text-blue-400',
+  gateway: 'border-blue-500/30 bg-blue-500/10 text-blue-400',
+  database: 'border-sky-500/30 bg-sky-500/10 text-sky-400',
+  cache: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300',
+  auth: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300',
+  external: 'border-blue-500/40 bg-blue-500/20 text-blue-300',
+  queue: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+  service: 'border-blue-500/30 bg-blue-500/10 text-blue-400',
+  backend: 'border-blue-500/30 bg-blue-500/10 text-blue-400',
+};
+
+const EDGE_COLORS = {
+  ok: '#3B82F6',
+  warning: '#F59E0B',
+  error: '#EF4444',
+} as const;
+
+/** Approximate advance width of the 10px monospace label face. */
+const LABEL_CHAR_W = 5.6;
+const LABEL_PADDING = 10;
+
+/** Approximate width of a monospace label at 10px, for the halo behind edge text. */
+function labelWidth(text: string): number {
+  return text.length * LABEL_CHAR_W + LABEL_PADDING;
+}
+
+/**
+ * Ellipsizes a label to the width it was allotted. Only reached when no
+ * collision-free position was available; otherwise the full text is drawn.
+ */
+function fitLabel(text: string, budget: number): string | null {
+  if (budget < MIN_LABEL_BUDGET) return null;
+  if (labelWidth(text) <= budget) return text;
+
+  const maxChars = Math.floor((budget - LABEL_PADDING) / LABEL_CHAR_W);
+  if (maxChars < 2) return null;
+  return `${text.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
+export const NodeCanvas: React.FC<NodeCanvasProps> = ({ nodes, edges, selectedNodeId, onSelectNode }) => {
   const [zoom, setZoom] = useState<number>(1);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
 
-  const getNodeIcon = (type: string) => {
-    switch (type) {
-      case 'frontend':
-        return <Globe className="w-4 h-4 text-blue-400" />;
-      case 'gateway':
-        return <Layers className="w-4 h-4 text-blue-400" />;
-      case 'database':
-        return <Database className="w-4 h-4 text-blue-400" />;
-      case 'cache':
-        return <Cpu className="w-4 h-4 text-sky-400" />;
-      case 'auth':
-        return <ShieldCheck className="w-4 h-4 text-indigo-400" />;
-      case 'external':
-        return <Sparkles className="w-4 h-4 text-blue-400" />;
-      case 'backend':
-      default:
-        return <Server className="w-4 h-4 text-blue-400" />;
-    }
-  };
+  const bounds = useMemo(() => canvasBounds(nodes), [nodes]);
 
-  const getNodeTypeBadgeColor = (type: string) => {
-    switch (type) {
-      case 'frontend':
-      case 'gateway':
-        return 'border-blue-500/30 bg-blue-500/10 text-blue-400';
-      case 'database':
-        return 'border-sky-500/30 bg-sky-500/10 text-sky-400';
-      case 'cache':
-      case 'auth':
-        return 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300';
-      case 'external':
-        return 'border-blue-500/40 bg-blue-500/20 text-blue-300';
-      case 'backend':
-      default:
-        return 'border-blue-500/30 bg-blue-500/10 text-blue-400';
-    }
-  };
+  const nodesById = useMemo(() => {
+    const map = new Map<string, ArchitectureNode>();
+    for (const node of nodes) map.set(node.id, node);
+    return map;
+  }, [nodes]);
+
+  const drawnEdges = useMemo(
+    () =>
+      edges.flatMap((edge) => {
+        const fromNode = nodesById.get(edge.from);
+        const toNode = nodesById.get(edge.to);
+        if (!fromNode || !toNode) return []; // validator drops these; belt and braces
+
+        const status = edge.status ?? 'ok';
+        const text = edge.label ?? edge.protocol ?? '';
+        // Placement is resolved against every card, so a label never lands on a node.
+        const placement = text ? labelPlacement(fromNode, toNode, nodes, labelWidth(text)) : null;
+
+        return [
+          {
+            edge,
+            status,
+            color: EDGE_COLORS[status],
+            isDimmed: selectedNodeId !== null && edge.from !== selectedNodeId && edge.to !== selectedNodeId,
+            text,
+            placement,
+            ...edgeGeometry(fromNode, toNode),
+          },
+        ];
+      }),
+    [edges, nodes, nodesById, selectedNodeId],
+  );
+
+  const fitToView = useCallback(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    // Fit both axes — fitting width alone still clipped tall graphs vertically.
+    const availableW = viewport.clientWidth - 32;
+    const availableH = viewport.clientHeight - 32;
+    if (availableW <= 0 || availableH <= 0) return;
+    const next = Math.min(1, availableW / bounds.width, availableH / bounds.height);
+    setZoom(Math.max(MIN_ZOOM, Number(next.toFixed(3))));
+  }, [bounds.height, bounds.width]);
+
+  // Refit when the graph changes shape *and* whenever the viewport resizes.
+  // A one-shot layout effect measured whatever width the container happened to
+  // have at that moment, which is not necessarily its settled width.
+  useLayoutEffect(() => {
+    fitToView();
+    const viewport = viewportRef.current;
+    if (!viewport || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => fitToView());
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [fitToView]);
+
+  const zoomBy = (delta: number) =>
+    setZoom((prev) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number((prev + delta).toFixed(3)))));
 
   return (
-    <div className="flex-1 relative bg-[#0A0C10] bg-grid-pattern border-b border-white/10 p-8 overflow-hidden min-h-[350px] flex items-center justify-center">
-      {/* Canvas Zoom Tools */}
+    <div className="flex-1 min-w-0 relative bg-[#0A0C10] border-b border-white/10 overflow-hidden min-h-[350px]">
+      {/* Zoom controls */}
       <div className="absolute top-4 right-4 flex gap-2 z-30 font-mono">
         <button
-          onClick={() => setZoom((prev) => Math.min(prev + 0.15, 1.5))}
+          type="button"
+          onClick={() => zoomBy(0.15)}
           className="w-8 h-8 flex items-center justify-center bg-[#15181E] border border-white/10 text-white/70 hover:text-blue-400 hover:border-blue-500/50 rounded transition-all cursor-pointer"
-          title="Zoom In"
+          title="Zoom in"
+          aria-label="Zoom in"
         >
           <ZoomIn className="w-4 h-4" />
         </button>
         <button
-          onClick={() => setZoom((prev) => Math.max(prev - 0.15, 0.6))}
+          type="button"
+          onClick={() => zoomBy(-0.15)}
           className="w-8 h-8 flex items-center justify-center bg-[#15181E] border border-white/10 text-white/70 hover:text-blue-400 hover:border-blue-500/50 rounded transition-all cursor-pointer"
-          title="Zoom Out"
+          title="Zoom out"
+          aria-label="Zoom out"
         >
           <ZoomOut className="w-4 h-4" />
         </button>
         <button
-          onClick={() => setZoom(1)}
+          type="button"
+          onClick={fitToView}
           className="w-8 h-8 flex items-center justify-center bg-[#15181E] border border-white/10 text-white/70 hover:text-blue-400 hover:border-blue-500/50 rounded transition-all cursor-pointer"
-          title="Reset Zoom"
+          title="Fit to view"
+          aria-label="Fit graph to view"
         >
           <Maximize2 className="w-4 h-4" />
         </button>
+        <span className="h-8 px-2 flex items-center bg-[#15181E] border border-white/10 rounded text-[10px] text-white/50 tabular-nums">
+          {Math.round(zoom * 100)}%
+        </span>
       </div>
 
-      {/* Main Scalable Node Container */}
-      <div
-        className="relative w-full h-full min-w-[800px] min-h-[320px] transition-transform duration-200 ease-out flex items-center justify-around flex-wrap gap-8 p-6"
-        style={{ transform: `scale(${zoom})` }}
-      >
-        {/* Render SVG Dynamic Connections */}
-        <svg className="absolute inset-0 w-full h-full pointer-events-none z-0 overflow-visible">
-          <defs>
-            <marker
-              id="arrowhead"
-              markerWidth="8"
-              markerHeight="6"
-              refX="7"
-              refY="3"
-              orient="auto"
-            >
-              <polygon points="0 0, 8 3, 0 6" fill="#3B82F6" />
-            </marker>
-          </defs>
-
-          {edges.map((edge, idx) => {
-            const fromNode = nodes.find((n) => n.id === edge.from);
-            const toNode = nodes.find((n) => n.id === edge.to);
-
-            if (!fromNode || !toNode) return null;
-
-            // Generate quadratic Bezier or horizontal curve
-            const x1 = fromNode.x || 100 + idx * 220;
-            const y1 = (fromNode.y || 180) + 40;
-            const x2 = toNode.x || 300 + idx * 220;
-            const y2 = (toNode.y || 180) + 40;
-
-            const cx1 = x1 + (x2 - x1) / 2;
-            const cy1 = y1;
-            const cx2 = x1 + (x2 - x1) / 2;
-            const cy2 = y2;
-
-            const pathD = `M ${x1 + 180} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
-
-            return (
-              <g key={`edge-${idx}`}>
-                <path
-                  d={pathD}
-                  fill="none"
-                  stroke={edge.status === 'error' ? '#ef4444' : '#3B82F6'}
-                  strokeWidth="2"
-                  strokeDasharray="6 4"
-                  className="flow-line opacity-75"
-                  markerEnd="url(#arrowhead)"
-                />
-                {edge.label && (
-                  <text
-                    x={(x1 + x2) / 2 + 80}
-                    y={(y1 + y2) / 2 - 8}
-                    fill="#60A5FA"
-                    fontSize="10"
-                    fontFamily="JetBrains Mono, monospace"
-                    textAnchor="middle"
-                    className="bg-black/80 px-1 py-0.5 rounded fill-blue-400"
-                  >
-                    {edge.label}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-        </svg>
-
-        {/* Render Architecture Nodes */}
-        {nodes.map((node) => {
-          const isSelected = selectedNodeId === node.id;
-          const badgeClass = getNodeTypeBadgeColor(node.type);
-
-          return (
+      {nodes.length === 0 ? (
+        <div className="h-full w-full flex flex-col items-center justify-center gap-3 text-center px-6 bg-grid-pattern">
+          <Network className="w-10 h-10 text-white/15" />
+          <p className="font-mono text-xs text-white/50 max-w-sm">
+            No nodes on the canvas. Capture a sketch, upload a photo, or load a sample to compile an architecture graph.
+          </p>
+        </div>
+      ) : (
+        <div ref={viewportRef} className="h-full w-full overflow-auto bg-grid-pattern p-4">
+          {/* Sizer carries the scaled footprint so scrollbars match what is drawn. */}
+          <div style={{ width: bounds.width * zoom, height: bounds.height * zoom }}>
             <div
-              key={node.id}
-              onClick={() => {
-                setSelectedNodeId(node.id);
-                if (onSelectNode) onSelectNode(node);
-              }}
-              className={`w-52 relative bg-[#15181E] border rounded overflow-hidden transition-all duration-200 cursor-pointer z-10 pb-6 group select-none ${
-                isSelected
-                  ? 'border-blue-500 ring-2 ring-blue-500/40 shadow-[0_0_20px_rgba(59,130,246,0.3)] scale-105'
-                  : 'border-white/10 hover:border-blue-500/60 hover:shadow-[0_0_15px_rgba(59,130,246,0.15)]'
-              }`}
+              className="relative origin-top-left transition-transform duration-150 ease-out"
+              style={{ width: bounds.width, height: bounds.height, transform: `scale(${zoom})` }}
             >
-              {/* Background Watermark Icon */}
-              <div className="absolute right-[-10px] top-[-10px] text-7xl text-white/5 pointer-events-none">
-                <Box className="w-20 h-20 text-white/5" />
-              </div>
+              {/* Edges share the node coordinate space, so arrows land on the cards. */}
+              <svg
+                className="absolute inset-0 pointer-events-none z-0"
+                width={bounds.width}
+                height={bounds.height}
+                viewBox={`0 0 ${bounds.width} ${bounds.height}`}
+                aria-hidden="true"
+              >
+                <defs>
+                  {Object.entries(EDGE_COLORS).map(([status, color]) => (
+                    <marker
+                      key={status}
+                      id={`arrowhead-${status}`}
+                      markerWidth="9"
+                      markerHeight="7"
+                      refX="8"
+                      refY="3.5"
+                      orient="auto"
+                    >
+                      <polygon points="0 0, 9 3.5, 0 7" fill={color} />
+                    </marker>
+                  ))}
+                </defs>
 
-              {/* Node Header */}
-              <div className={`border-b px-3 py-2 flex items-center justify-between relative z-10 ${badgeClass}`}>
-                <div className="flex items-center gap-2">
-                  {getNodeIcon(node.type)}
-                  <span className="font-mono font-bold text-xs uppercase tracking-wider truncate max-w-[120px]">
-                    {node.label}
-                  </span>
-                </div>
-                <Activity className="w-3.5 h-3.5 text-blue-400 animate-pulse" />
-              </div>
+                {drawnEdges.map(({ edge, color, status, path, isDimmed }) => (
+                  <path
+                    key={`${edge.from}->${edge.to}`}
+                    d={path}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth={2}
+                    strokeDasharray={edge.style === 'solid' ? undefined : '6 4'}
+                    className={edge.style === 'animated' ? 'flow-line' : undefined}
+                    markerEnd={`url(#arrowhead-${status})`}
+                    opacity={isDimmed ? 0.25 : 1}
+                  />
+                ))}
+              </svg>
 
-              {/* Node Metadata Body */}
-              <div className="p-3 font-mono text-[11px] text-white/70 space-y-1.5 relative z-10">
-                <div className="flex justify-between items-center">
-                  <span className="text-white/40">tech:</span>
-                  <span className="text-white font-bold truncate max-w-[110px]">{node.tech}</span>
-                </div>
+              {/* Node cards, absolutely placed at the coordinates the edges were drawn from. */}
+              {nodes.map((node) => {
+                const isSelected = selectedNodeId === node.id;
+                const badgeClass = NODE_BADGE_CLASSES[node.type];
 
-                {node.details?.port && (
-                  <div className="flex justify-between items-center">
-                    <span className="text-white/40">port:</span>
-                    <span className="text-blue-400">{node.details.port}</span>
+                return (
+                  <div
+                    key={node.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={isSelected}
+                    aria-label={`${node.label}, ${node.type}, ${node.tech}`}
+                    onClick={() => onSelectNode(isSelected ? null : node)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        onSelectNode(isSelected ? null : node);
+                      }
+                      if (event.key === 'Escape') onSelectNode(null);
+                    }}
+                    style={{ left: node.x, top: node.y, width: NODE_W, height: NODE_H }}
+                    className={`absolute bg-[#15181E] border rounded overflow-hidden transition-colors duration-150 cursor-pointer z-10 group focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+                      isSelected
+                        ? 'border-blue-500 ring-2 ring-blue-500/40 shadow-[0_0_20px_rgba(59,130,246,0.3)]'
+                        : 'border-white/10 hover:border-blue-500/60 hover:shadow-[0_0_15px_rgba(59,130,246,0.15)]'
+                    }`}
+                  >
+                    <div className="absolute right-[-10px] top-[-10px] pointer-events-none">
+                      <Box className="w-20 h-20 text-white/5" />
+                    </div>
+
+                    <div className={`border-b px-3 py-2 flex items-center justify-between relative z-10 ${badgeClass}`}>
+                      <div className="flex items-center gap-2 min-w-0">
+                        {NODE_ICONS[node.type]}
+                        <span className="font-mono font-bold text-xs uppercase tracking-wider truncate">{node.label}</span>
+                      </div>
+                      <Activity className="w-3.5 h-3.5 shrink-0" />
+                    </div>
+
+                    <div className="px-3 py-2 font-mono text-[11px] text-white/70 space-y-1 relative z-10">
+                      <div className="flex justify-between items-center gap-2">
+                        <span className="text-white/40 shrink-0">tech:</span>
+                        <span className="text-white font-bold truncate">{node.tech}</span>
+                      </div>
+                      {node.details.port && (
+                        <div className="flex justify-between items-center gap-2">
+                          <span className="text-white/40 shrink-0">port:</span>
+                          <span className="text-blue-400 truncate">{node.details.port}</span>
+                        </div>
+                      )}
+                      {node.details.status && (
+                        <div className="flex justify-between items-center gap-2">
+                          <span className="text-white/40 shrink-0">status:</span>
+                          <span className="text-blue-400 font-bold truncate">{node.details.status}</span>
+                        </div>
+                      )}
+                      {node.details.latency && (
+                        <div className="flex justify-between items-center gap-2">
+                          <span className="text-white/40 shrink-0">latency:</span>
+                          <span className="text-sky-400 truncate">{node.details.latency}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Connector studs, aligned with the edge anchor points. */}
+                    <div className="absolute top-1/2 -left-[5px] w-2.5 h-2.5 bg-blue-500 -translate-y-1/2 rounded-sm shadow-[0_0_8px_#3B82F6]" />
+                    <div className="absolute top-1/2 -right-[5px] w-2.5 h-2.5 bg-blue-400 -translate-y-1/2 rounded-sm shadow-[0_0_8px_#60A5FA]" />
                   </div>
-                )}
+                );
+              })}
 
-                {node.details?.status && (
-                  <div className="flex justify-between items-center">
-                    <span className="text-white/40">status:</span>
-                    <span className="text-blue-400 font-bold">{node.details.status}</span>
-                  </div>
-                )}
+              {/*
+                Edge labels ride in their own layer above the cards. Drawn inside the
+                path SVG they were hidden behind adjacent nodes whenever two nodes sat
+                close together — exactly where the label matters most.
+              */}
+              <svg
+                className="absolute inset-0 pointer-events-none z-20"
+                width={bounds.width}
+                height={bounds.height}
+                viewBox={`0 0 ${bounds.width} ${bounds.height}`}
+                aria-hidden="true"
+              >
+                {drawnEdges.map(({ edge, color, text, placement, isDimmed }) => {
+                  if (!placement) return null;
+                  const shown = fitLabel(text, placement.budget);
+                  if (!shown) return null;
 
-                {node.details?.latency && (
-                  <div className="flex justify-between items-center">
-                    <span className="text-white/40">latency:</span>
-                    <span className="text-sky-400">{node.details.latency}</span>
-                  </div>
-                )}
-
-                {node.details?.routes && (
-                  <div className="flex justify-between items-center">
-                    <span className="text-white/40">routes:</span>
-                    <span className="text-indigo-300 text-[10px]">{node.details.routes}</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Input & Output Ports */}
-              <div className="absolute top-1/2 -left-[5px] w-2.5 h-2.5 bg-blue-500 transform -translate-y-1/2 rounded-sm shadow-[0_0_8px_#3B82F6]" />
-              <div className="absolute top-1/2 -right-[5px] w-2.5 h-2.5 bg-blue-400 transform -translate-y-1/2 rounded-sm shadow-[0_0_8px_#60A5FA]" />
-
-              {/* Bottom Corner Port Info */}
-              <div className="absolute bottom-1 right-2 flex items-center gap-1 z-10">
-                <div className="w-1.5 h-1.5 rounded-full bg-blue-400 shadow-[0_0_5px_#3B82F6]" />
-                <span className="font-mono text-[9px] text-white/40">
-                  :{node.details?.port || 'auto'}
-                </span>
-              </div>
+                  return (
+                    <g key={`label-${edge.from}->${edge.to}`} opacity={isDimmed ? 0.25 : 1}>
+                      {/* Full text on hover, for the rare label that still had to be shortened. */}
+                      <title>{text}</title>
+                      <rect
+                        x={placement.x - labelWidth(shown) / 2}
+                        y={placement.y - 9}
+                        width={labelWidth(shown)}
+                        height={15}
+                        rx={3}
+                        fill="#0A0C10"
+                        stroke={color}
+                        strokeOpacity={0.35}
+                      />
+                      <text
+                        x={placement.x}
+                        y={placement.y - 1}
+                        fill={color}
+                        fontSize={10}
+                        fontFamily="JetBrains Mono, monospace"
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                      >
+                        {shown}
+                      </text>
+                    </g>
+                  );
+                })}
+              </svg>
             </div>
-          );
-        })}
-      </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
-

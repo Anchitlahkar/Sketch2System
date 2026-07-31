@@ -108,3 +108,24 @@
   }
 }
 
+/* Indeterminate progress bar: the compile duration is not measurable in advance,
+   so the bar sweeps rather than claiming a percentage. */
+@keyframes indeterminate-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+.indeterminate-bar {
+  animation: indeterminate-sweep 1.4s ease-in-out infinite;
+}
+
+/* Respect users who have asked for reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .scan-line,
+  .flow-line,
+  .indeterminate-bar,
+  .animate-spin,
+  .animate-pulse {
+    animation: none !important;
+  }
+}
+

@@ -1,383 +1,254 @@
-import React, { useState } from 'react';
-import { X, BookOpen, Code2, ShieldAlert, Zap, Terminal, Copy, Check } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { BookOpen, Check, Code2, Copy, ShieldAlert, Terminal, X, Zap } from 'lucide-react';
+
+import { LOW_CONFIDENCE_THRESHOLD, RESPONSE_SCHEMA, SYSTEM_PROMPT, buildUserPrompt } from '../shared/aiSpec';
 
 interface MentorDocsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  model: string;
 }
 
-export const MentorDocsModal: React.FC<MentorDocsModalProps> = ({ isOpen, onClose }) => {
+const FOCUSABLE =
+  'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
+
+export const MentorDocsModal: React.FC<MentorDocsModalProps> = ({ isOpen, onClose, model }) => {
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const previouslyFocused = useRef<HTMLElement | null>(null);
+
+  // Escape to close, Tab cycles inside the dialog, focus returns where it came from.
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+
+      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE));
+      if (focusable.length === 0) return;
+
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    },
+    [onClose],
+  );
+
+  useEffect(() => {
+    if (!isOpen) return;
+    previouslyFocused.current = document.activeElement as HTMLElement | null;
+    closeButtonRef.current?.focus();
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      previouslyFocused.current?.focus();
+    };
+  }, [handleKeyDown, isOpen]);
 
   if (!isOpen) return null;
 
-  const handleCopy = (text: string, label: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedSection(label);
-    setTimeout(() => setCopiedSection(null), 2000);
+  const handleCopy = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard?.writeText(text);
+      setCopiedSection(label);
+      window.setTimeout(() => setCopiedSection(null), 2000);
+    } catch {
+      setCopiedSection(null);
+    }
   };
 
-  const systemPromptText = `You are a Senior Google Principal Cloud Architect and Paper Compiler AI for "Sketch2System (PaperOps)".
-Your role is to analyze handwritten paper architecture sketches, flowcharts, system designs, API diagrams, or database layouts and convert them into a structured digital architecture graph, Mermaid diagram, architecture code, design review, and implementation roadmap.
+  // Rendered from the same constants the server sends to Gemini, so the documented
+  // spec cannot drift from the live one the way the old hardcoded copies did.
+  const schemaSnippet = `import { Type } from "@google/genai";\n\nexport const RESPONSE_SCHEMA = ${JSON.stringify(
+    RESPONSE_SCHEMA,
+    null,
+    2,
+  )};`;
 
-CRITICAL INSTRUCTIONS:
-1. REASONING OVER OCR: Do NOT simply transcribe handwriting letters. Analyze visual shapes, arrows, labels, and architectural topology to infer missing technical details (e.g. standard ports, protocols like HTTP/gRPC, database types, security boundaries, authentication layers, caching, queues).
-2. SPATIAL POSITIONING: Assign logical 2D canvas coordinates (x: 50-900, y: 50-400) for clean grid layout.
-3. ARCHITECTURE REVIEW: Perform a realistic design review detailing strengths, single points of failure, missing caches/auth/load-balancers, and concrete recommendations.
-4. INFRASTRUCTURE CODE: Auto-generate valid Docker Compose / infrastructure.yaml code based on discovered services.
-5. MERMAID DIAGRAM: Provide valid Mermaid flowchart syntax (e.g. graph LR).
-6. CONFIDENCE & HANDWRITING: Provide confidence score (0.0 to 1.0), rate handwriting_clarity ("clear", "ambiguous", "low_contrast"), and suggest retry tips if needed.`;
-
-  const expressCodeSnippet = `// Backend Express Route (server.ts) using @google/genai SDK
-import express from 'express';
-import { GoogleGenAI, Type } from '@google/genai';
-
-const app = express();
-app.use(express.json({ limit: '20mb' }));
-
-app.post('/api/compile-sketch', async (req, res) => {
-  const { imageBase64, promptHint } = req.body;
-  const apiKey = process.env.GEMINI_API_KEY;
-
-  const ai = new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: { 'User-Agent': 'aistudio-build' }
-    }
-  });
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.6-flash',
-    contents: {
-      parts: [
-        { inlineData: { mimeType: 'image/png', data: imageBase64.replace(/^data:image\\/\\w+;base64,/, '') } },
-        { text: \`Analyze handwritten architecture sketch. User hint: \${promptHint || 'None'}\` }
-      ]
-    },
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      temperature: 0.2,
-      responseMimeType: 'application/json',
-      responseSchema: RESPONSE_SCHEMA
-    }
-  });
-
-  const result = JSON.parse(response.text);
-  res.json(result);
-});`;
-
-  const nextJsRouteSnippet = `// Next.js App Router API Route (app/api/compile-sketch/route.ts)
-import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenAI, Type } from '@google/genai';
-
-export async function POST(req: NextRequest) {
-  const { imageBase64, promptHint } = await req.json();
-  const apiKey = process.env.GEMINI_API_KEY;
-
-  const ai = new GoogleGenAI({
-    apiKey,
-    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-  });
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.6-flash',
-    contents: {
-      parts: [
-        { inlineData: { mimeType: 'image/png', data: imageBase64 } },
-        { text: \`Analyze handwritten paper diagram. Hint: \${promptHint}\` }
-      ]
-    },
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      temperature: 0.2,
-      responseMimeType: 'application/json',
-      responseSchema: RESPONSE_SCHEMA
-    }
-  });
-
-  return NextResponse.json(JSON.parse(response.text));
-}`;
-
-  const jsonSchemaSnippet = `import { Type } from "@google/genai";
-
-export const RESPONSE_SCHEMA = {
-  type: Type.OBJECT,
-  properties: {
-    title: { type: Type.STRING },
-    summary: { type: Type.STRING },
-    nodes: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          id: { type: Type.STRING },
-          label: { type: Type.STRING },
-          type: { type: Type.STRING },
-          tech: { type: Type.STRING },
-          details: { type: Type.OBJECT },
-          x: { type: Type.INTEGER },
-          y: { type: Type.INTEGER }
-        },
-        required: ["id", "label", "type", "tech", "x", "y"]
-      }
-    },
-    edges: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          from: { type: Type.STRING },
-          to: { type: Type.STRING },
-          label: { type: Type.STRING },
-          protocol: { type: Type.STRING },
-          style: { type: Type.STRING },
-          status: { type: Type.STRING }
-        },
-        required: ["from", "to"]
-      }
-    },
-    mermaid: { type: Type.STRING },
-    architecture_review: {
-      type: Type.OBJECT,
-      properties: {
-        strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-        issues: { type: Type.ARRAY, items: { type: Type.STRING } },
-        recommendations: { type: Type.ARRAY, items: { type: Type.STRING } }
-      },
-      required: ["strengths", "issues", "recommendations"]
-    },
-    implementation_plan: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          step: { type: Type.INTEGER },
-          task: { type: Type.STRING },
-          description: { type: Type.STRING },
-          file_affected: { type: Type.STRING }
-        },
-        required: ["step", "task", "description"]
-      }
-    },
-    generated_code_snippets: {
-      type: Type.OBJECT,
-      properties: {
-        infrastructure_yaml: { type: Type.STRING },
-        docker_compose: { type: Type.STRING }
-      },
-      required: ["infrastructure_yaml", "docker_compose"]
-    },
-    confidence: { type: Type.NUMBER },
-    handwriting_clarity: { type: Type.STRING },
-    retry_suggestion: { type: Type.STRING }
+  const requestSnippet = `// server.ts — the live request this app makes
+const response = await ai.models.generateContent({
+  model: ${JSON.stringify(model)},
+  contents: {
+    parts: [
+      { inlineData: { mimeType, data: imageData } },
+      { text: userPrompt },
+    ],
   },
-  required: [
-    "title", "summary", "nodes", "edges", "mermaid",
-    "architecture_review", "implementation_plan",
-    "generated_code_snippets", "confidence", "handwriting_clarity"
-  ]
-};`;
+  config: {
+    systemInstruction: SYSTEM_PROMPT,
+    temperature: 0.2,
+    responseMimeType: 'application/json',
+    responseSchema: RESPONSE_SCHEMA,
+    abortSignal: controller.signal,
+  },
+});
+
+const result = normalizeAnalysis(JSON.parse(response.text));`;
+
+  const sections: Array<{ id: string; title: string; icon: React.ReactNode; body: string; tone: string }> = [
+    { id: 'sysPrompt', title: '2. System prompt', icon: <Terminal className="w-4 h-4" />, body: SYSTEM_PROMPT, tone: 'text-blue-400' },
+    { id: 'userPrompt', title: '3. User turn template', icon: <Terminal className="w-4 h-4" />, body: buildUserPrompt('Add Redis cache & API gateway'), tone: 'text-blue-400' },
+    { id: 'schema', title: '4. Structured response schema', icon: <Code2 className="w-4 h-4" />, body: schemaSnippet, tone: 'text-sky-400' },
+    { id: 'request', title: '5. Backend request', icon: <Terminal className="w-4 h-4" />, body: requestSnippet, tone: 'text-indigo-300' },
+  ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-lg p-4 md:p-8 select-none overflow-y-auto font-sans">
-      <div className="bg-[#15181E] border border-blue-500/30 rounded-lg w-full max-w-5xl max-h-[90vh] flex flex-col shadow-[0_0_50px_rgba(59,130,246,0.2)] overflow-hidden">
-        {/* Modal Header */}
-        <div className="bg-[#1A1D24] border-b border-white/10 px-6 py-4 flex justify-between items-center">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-lg p-4 md:p-8 overflow-y-auto font-sans"
+      onClick={onClose}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="mentor-modal-title"
+        onClick={(event) => event.stopPropagation()}
+        className="bg-[#15181E] border border-blue-500/30 rounded-lg w-full max-w-5xl max-h-[90vh] flex flex-col shadow-[0_0_50px_rgba(59,130,246,0.2)] overflow-hidden"
+      >
+        <div className="bg-[#1A1D24] border-b border-white/10 px-6 py-4 flex justify-between items-center shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded bg-blue-600/20 border border-blue-500/50 flex items-center justify-center text-blue-400">
-              <Zap className="w-5 h-5 text-blue-400" />
+              <Zap className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
-                <span>Google Hackathon Pitch & AI Behavior Specs</span>
+              <h2 id="mentor-modal-title" className="text-base font-bold text-white flex items-center gap-2 flex-wrap">
+                <span>Prompt &amp; schema specification</span>
                 <span className="text-[10px] bg-blue-500/10 border border-blue-500/30 text-blue-400 px-2 py-0.5 rounded font-mono">
-                  Gemini 3.6 Flash
+                  {model}
                 </span>
               </h2>
-              <p className="text-xs font-mono text-white/50">
-                Sketch2System — Paper Compiler Engineering Breakdown
-              </p>
+              <p className="text-xs font-mono text-white/50">Rendered live from the constants the server actually sends</p>
             </div>
           </div>
 
           <button
+            ref={closeButtonRef}
+            type="button"
             onClick={onClose}
+            aria-label="Close specification"
             className="text-white/40 hover:text-white p-1.5 rounded border border-transparent hover:border-white/10 transition-all cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Modal Body Scrollable */}
-        <div className="p-6 overflow-y-auto space-y-8 font-mono text-xs text-white/80 leading-relaxed">
-          {/* Section 0: Optimal Model Choice & Prompt Breakdown */}
-          <div className="space-y-3 bg-[#0F1115] p-5 rounded border border-white/10">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-blue-400 flex items-center gap-2">
-                <BookOpen className="w-4 h-4 text-blue-400" />
-                <span>1. Model Selection & Prompt Architecture Strategy</span>
-              </h3>
-            </div>
+        <div className="p-6 overflow-y-auto space-y-6 font-mono text-xs text-white/80 leading-relaxed">
+          <section className="space-y-3 bg-[#0F1115] p-5 rounded border border-white/10">
+            <h3 className="text-sm font-bold text-blue-400 flex items-center gap-2">
+              <BookOpen className="w-4 h-4" />
+              <span>1. Model selection &amp; prompt architecture</span>
+            </h3>
             <div className="text-white/70 space-y-2">
               <p>
-                <strong className="text-blue-300">Recommended Model:</strong>{' '}
-                <code className="bg-black/50 text-blue-400 px-1.5 py-0.5 rounded">gemini-3.6-flash</code>
+                <strong className="text-blue-300">Model:</strong>{' '}
+                <code className="bg-black/50 text-blue-400 px-1.5 py-0.5 rounded">{model}</code>{' '}
+                <span className="text-white/40">(set via the GEMINI_MODEL environment variable)</span>
               </p>
               <p>
-                <strong className="text-blue-300">Why this model?</strong> Gemini 3.6 Flash provides ultra-fast sub-second latency, state-of-the-art vision spatial reasoning for paper drawings, and reliable 100% adherence to strict structured JSON outputs (`responseSchema`).
+                A Flash-tier multimodal model keeps latency low for live capture while still handling vision
+                spatial reasoning and structured JSON output.
               </p>
               <div className="mt-3 bg-black/40 p-3 rounded border border-white/10 text-[11px]">
-                <strong className="text-blue-400 block mb-1">Why Each Prompt Section Exists:</strong>
+                <strong className="text-blue-400 block mb-1">Why each prompt section exists:</strong>
                 <ul className="list-disc list-inside space-y-1 text-white/50">
-                  <li><span className="text-white font-bold">Role Definition:</span> Sets persona to Principal Cloud Solutions Architect to trigger deep architectural inference rather than naive image captioning.</li>
-                  <li><span className="text-white font-bold">Reasoning over OCR:</span> Mandates inferring implicit layers (ports, protocols, SSL, DB pools, caches) even if user handwriting only drew a simple cylinder or box.</li>
-                  <li><span className="text-white font-bold">Spatial 2D Coordinates:</span> Forces assigning (x, y) grid coordinates so frontend canvas renders nodes cleanly without overlap.</li>
-                  <li><span className="text-white font-bold">Architectural Review:</span> Generates real-world security vulnerabilities, SPOF warnings, and scale recommendations.</li>
-                  <li><span className="text-white font-bold">Confidence & Retry:</span> Provides feedback when paper sketches are blurry or low-contrast.</li>
+                  <li>
+                    <span className="text-white font-bold">Role definition:</span> sets an architect persona so the model
+                    infers topology rather than captioning an image.
+                  </li>
+                  <li>
+                    <span className="text-white font-bold">Reasoning over OCR:</span> mandates inferring implicit layers —
+                    ports, protocols, TLS, pools, caches.
+                  </li>
+                  <li>
+                    <span className="text-white font-bold">Spatial coordinates:</span> the canvas renders cards at the
+                    returned (x, y), so the prompt states the exact card size and minimum spacing.
+                  </li>
+                  <li>
+                    <span className="text-white font-bold">Untrusted input rule:</span> the image and the user hint are
+                    data, not instructions — this is the prompt-injection guard.
+                  </li>
+                  <li>
+                    <span className="text-white font-bold">Confidence &amp; retry:</span> anything below{' '}
+                    {LOW_CONFIDENCE_THRESHOLD * 100}% is surfaced to the user as a warning rather than shown as fact.
+                  </li>
                 </ul>
               </div>
             </div>
-          </div>
+          </section>
 
-          {/* Section 1: System Prompt */}
-          <div className="space-y-3 bg-[#0F1115] p-5 rounded border border-white/10">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-blue-400 flex items-center gap-2">
-                <Terminal className="w-4 h-4 text-blue-400" />
-                <span>2. System Prompt</span>
-              </h3>
-              <button
-                onClick={() => handleCopy(systemPromptText, 'sysPrompt')}
-                className="text-blue-400 hover:text-white text-[11px] flex items-center gap-1 cursor-pointer"
-              >
-                {copiedSection === 'sysPrompt' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copiedSection === 'sysPrompt' ? 'Copied' : 'Copy Prompt'}</span>
-              </button>
-            </div>
-            <pre className="bg-black/50 p-4 rounded text-blue-400 text-[11px] whitespace-pre-wrap overflow-x-auto border border-white/10 font-mono">
-              {systemPromptText}
-            </pre>
-          </div>
-
-          {/* Section 2: Response Schema */}
-          <div className="space-y-3 bg-[#0F1115] p-5 rounded border border-white/10">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-sky-400 flex items-center gap-2">
-                <Code2 className="w-4 h-4 text-sky-400" />
-                <span>3. Structured JSON Response Schema (@google/genai Type)</span>
-              </h3>
-              <button
-                onClick={() => handleCopy(jsonSchemaSnippet, 'schema')}
-                className="text-sky-400 hover:text-white text-[11px] flex items-center gap-1 cursor-pointer"
-              >
-                {copiedSection === 'schema' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copiedSection === 'schema' ? 'Copied' : 'Copy Schema'}</span>
-              </button>
-            </div>
-            <pre className="bg-black/50 p-4 rounded text-sky-400 text-[11px] whitespace-pre overflow-x-auto border border-white/10 font-mono">
-              {jsonSchemaSnippet}
-            </pre>
-          </div>
-
-          {/* Section 3: Express & Next.js Backend Code */}
-          <div className="space-y-3 bg-[#0F1115] p-5 rounded border border-white/10">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-indigo-300 flex items-center gap-2">
-                <Terminal className="w-4 h-4 text-indigo-300" />
-                <span>4. Backend Implementation Logic (Express & Next.js)</span>
-              </h3>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <div className="flex justify-between items-center text-[11px] text-white/50 mb-1 font-bold">
-                  <span>EXPRESS SERVER (server.ts):</span>
-                  <button
-                    onClick={() => handleCopy(expressCodeSnippet, 'express')}
-                    className="text-blue-400 hover:text-white text-[10px] flex items-center gap-1 cursor-pointer"
-                  >
-                    {copiedSection === 'express' ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                    <span>Copy Express</span>
-                  </button>
-                </div>
-                <pre className="bg-black/50 p-3 rounded text-white/80 text-[11px] whitespace-pre overflow-x-auto border border-white/10 font-mono">
-                  {expressCodeSnippet}
-                </pre>
+          {sections.map((section) => (
+            <section key={section.id} className="space-y-3 bg-[#0F1115] p-5 rounded border border-white/10">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className={`text-sm font-bold flex items-center gap-2 ${section.tone}`}>
+                  {section.icon}
+                  <span>{section.title}</span>
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => void handleCopy(section.body, section.id)}
+                  className={`hover:text-white text-[11px] flex items-center gap-1 cursor-pointer shrink-0 ${section.tone}`}
+                >
+                  {copiedSection === section.id ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedSection === section.id ? 'Copied' : 'Copy'}</span>
+                </button>
               </div>
+              <pre className={`bg-black/50 p-4 rounded text-[11px] whitespace-pre-wrap overflow-x-auto border border-white/10 font-mono max-h-72 overflow-y-auto ${section.tone}`}>
+                {section.body}
+              </pre>
+            </section>
+          ))}
 
-              <div>
-                <div className="flex justify-between items-center text-[11px] text-white/50 mb-1 font-bold">
-                  <span>NEXT.JS API ROUTE (app/api/compile-sketch/route.ts):</span>
-                  <button
-                    onClick={() => handleCopy(nextJsRouteSnippet, 'nextjs')}
-                    className="text-blue-400 hover:text-white text-[10px] flex items-center gap-1 cursor-pointer"
-                  >
-                    {copiedSection === 'nextjs' ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                    <span>Copy Next.js</span>
-                  </button>
-                </div>
-                <pre className="bg-black/50 p-3 rounded text-white/80 text-[11px] whitespace-pre overflow-x-auto border border-white/10 font-mono">
-                  {nextJsRouteSnippet}
-                </pre>
-              </div>
-            </div>
-          </div>
-
-          {/* Section 4: Best Practices & Hallucination Guardrails */}
-          <div className="space-y-3 bg-[#0F1115] p-5 rounded border border-white/10">
+          <section className="space-y-3 bg-[#0F1115] p-5 rounded border border-white/10">
             <h3 className="text-sm font-bold text-amber-400 flex items-center gap-2">
-              <ShieldAlert className="w-4 h-4 text-amber-400" />
-              <span>5. Best Practices for Reducing Hallucinations</span>
+              <ShieldAlert className="w-4 h-4" />
+              <span>6. Guardrails in this implementation</span>
             </h3>
             <ul className="list-disc list-inside space-y-2 text-white/70">
               <li>
-                <strong className="text-white">Strict Response Mime Type & Schema:</strong> Pass <code className="text-blue-400">responseMimeType: "application/json"</code> and define exact property types using <code className="text-blue-400">Type.OBJECT</code> and <code className="text-blue-400">Type.ARRAY</code> to eliminate malformed JSON strings or conversational markdown wrappers.
+                <strong className="text-white">Schema + mime type:</strong> <code className="text-blue-400">responseMimeType</code>{' '}
+                and <code className="text-blue-400">responseSchema</code> constrain the shape; every response is still
+                re-validated server-side and client-side before it reaches the UI.
               </li>
               <li>
-                <strong className="text-white">Low Temperature Tuning (0.2):</strong> Keep temperature low for deterministic JSON schema mapping while preserving architectural reasoning creativity.
+                <strong className="text-white">Low temperature (0.2):</strong> deterministic structure without flattening
+                architectural inference.
               </li>
               <li>
-                <strong className="text-white">User-Agent Telemetry Header:</strong> Always supply <code className="text-blue-400">headers: &#123; 'User-Agent': 'aistudio-build' &#125;</code> in <code className="text-blue-400">httpOptions</code> when initializing <code className="text-blue-400">GoogleGenAI</code>.
+                <strong className="text-white">Injection containment:</strong> the hint is JSON-encoded inside a delimiter
+                and the system prompt marks image text and hints as untrusted data.
               </li>
               <li>
-                <strong className="text-white">Confidence Thresholding:</strong> Evaluate <code className="text-blue-400">confidence</code> output score. If below 0.70, display retry suggestions to the user to capture paper sketch with clearer lighting or pen contrast.
+                <strong className="text-white">Output sanitation:</strong> Mermaid is stripped of{' '}
+                <code className="text-blue-400">click</code>/script directives and rendered with{' '}
+                <code className="text-blue-400">securityLevel: 'strict'</code>.
+              </li>
+              <li>
+                <strong className="text-white">Honest degradation:</strong> if the key is missing or Gemini fails, the
+                response is labelled <code className="text-blue-400">source: "mock"</code> and the UI shows a banner —
+                placeholder output is never presented as a real analysis.
               </li>
             </ul>
-          </div>
-
-          {/* Section 5: 2-Minute Live Demo Pitch Blueprint */}
-          <div className="space-y-3 bg-[#0F1115] p-5 rounded border border-blue-500/30 shadow-[0_0_20px_rgba(59,130,246,0.1)]">
-            <h3 className="text-sm font-bold text-blue-400 flex items-center gap-2">
-              <Zap className="w-4 h-4 text-blue-400" />
-              <span>6. Hackathon Demo Blueprint (2-Minute Pitch Strategy for Google Prompt Wars)</span>
-            </h3>
-            <div className="space-y-3 text-white/70">
-              <div className="p-2.5 bg-black/40 rounded border border-white/10">
-                <span className="text-blue-400 font-bold">0:00 - 0:30 (The Hook):</span> "Every developer starts on a paper napkin or notebook. But turning paper drawings into working Docker setups takes hours. Meet Sketch2System — paper compiler powered by Gemini 3.6 Flash."
-              </div>
-              <div className="p-2.5 bg-black/40 rounded border border-white/10">
-                <span className="text-blue-400 font-bold">0:30 - 1:15 (Live Capture & Reasoning):</span> Show camera lens or click a pre-analyzed sample drawing. Hit 'Capture & Compile'. Point out how Gemini doesn't just read letters — it infers implicit ports, NGINX gateways, Postgres DBs, and Redis cache layers.
-              </div>
-              <div className="p-2.5 bg-black/40 rounded border border-white/10">
-                <span className="text-blue-400 font-bold">1:15 - 1:45 (Architecture Review & Code):</span> Reveal the generated interactive node graph, animated flow lines, security audit recommendations, and ready-to-run <code className="text-blue-400">infrastructure.yaml</code>.
-              </div>
-              <div className="p-2.5 bg-black/40 rounded border border-white/10">
-                <span className="text-blue-400 font-bold">1:45 - 2:00 (Export & Impact):</span> Hit 'Export to GitHub'. "Paper to production infrastructure in under 2 seconds. Thank you!"
-              </div>
-            </div>
-          </div>
+          </section>
         </div>
 
-        {/* Modal Footer */}
-        <div className="bg-[#1A1D24] border-t border-white/10 px-6 py-3 flex justify-between items-center">
-          <span className="text-[10px] text-white/40">
-            Built with @google/genai TypeScript SDK & Gemini 3.6 Flash
-          </span>
+        <div className="bg-[#1A1D24] border-t border-white/10 px-6 py-3 flex justify-between items-center shrink-0">
+          <span className="text-[10px] text-white/40">Built with the @google/genai TypeScript SDK</span>
           <button
+            type="button"
             onClick={onClose}
             className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold font-mono text-xs rounded transition-all cursor-pointer"
           >
-            Close Spec View
+            Close
           </button>
         </div>
       </div>
