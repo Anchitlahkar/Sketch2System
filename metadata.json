@@ -1,0 +1,10 @@
+{
+  "name": "Sketch2System - Paper Compiler",
+  "description": "AI-powered paper compiler that turns handwritten architecture sketches into digital node graphs, Mermaid diagrams, Docker specs, and technical reviews using Gemini 3.6 Flash.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
