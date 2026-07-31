@@ -44,6 +44,26 @@ is held and while a compile is running — so the recording indicator goes out i
 staying lit for a feed nobody can see. Clearing the frame resumes it, without
 re-prompting for permission.
 
+### Editing the graph
+
+The canvas is editable — every change flows into the exported zip and `architecture.json`.
+
+| Action | How |
+| --- | --- |
+| Move a node | Drag it |
+| Add a component | Toolbar `+` |
+| Delete a node or edge | Select it, then the toolbar bin or <kbd>Delete</kbd> |
+| Connect two components | Toolbar link icon, then click source and target |
+| Select an edge | Click the line |
+| Rename a component | Edit the name field in the selection bar |
+| Re-arrange | Toolbar grid icon — re-runs the automatic layout |
+| Zoom | Toolbar buttons, or <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + scroll |
+| Full screen | Toolbar — gives the graph the whole work area |
+
+Layout is computed by the app, not the model: nodes are layered by pipeline depth and
+ordered to minimise edge crossings, so graphs stay readable at any size. The model only
+supplies relative ordering. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#why-the-model-does-not-place-nodes).
+
 ### Reading the confidence score
 
 `CONFIDENCE` and `Clarity` are the **model's own self-report** about how well it could
@@ -163,14 +183,15 @@ src/
   types.ts                    SketchAnalysisResult and the API envelope types
   components/
     CameraPane.tsx            Webcam capture, upload, voice trigger, samples
-    NodeCanvas.tsx            Absolutely-positioned node graph + SVG edge layers
+    NodeCanvas.tsx            Editable node graph: drag, connect, zoom, full screen
     CodeEditorPane.tsx        YAML / review / Mermaid / roadmap tabs
     MentorDocsModal.tsx       Prompt + schema spec, rendered from the live constants
     Header.tsx SideNav.tsx ProcessingOverlay.tsx ErrorBoundary.tsx
   shared/
     aiSpec.ts                 System prompt, response schema, model — single source
     validate.ts               Runtime validation and sanitation of model output
-    graphLayout.ts            Card size and edge geometry shared by canvas + validator
+    graphLayout.ts            Card size, edge geometry, collision-free label placement
+    autoLayout.ts             Layered graph layout — the app places nodes, not the model
   lib/
     zip.ts                    Dependency-free ZIP writer (store method)
     exportBundle.ts           Builds README/YAML/Mermaid/JSON and triggers download

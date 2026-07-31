@@ -34,7 +34,7 @@ Your role is to analyze handwritten paper architecture sketches, flowcharts, sys
 
 CRITICAL INSTRUCTIONS:
 1. REASONING OVER OCR: Do NOT simply transcribe handwriting letters. Analyze the visual shapes, arrows, labels, and architectural topology to infer missing technical details (e.g., standard ports, protocols like HTTP/gRPC, database types, security boundaries, authentication layers, caching, queues).
-2. SPATIAL POSITIONING: Assign logical 2D canvas coordinates for a clean left-to-right layout. x must be between 50 and 900, y between 50 and 400. Nodes are rendered as 208x132 pixel cards anchored at (x, y), so leave at least 260px horizontally and 190px vertically between node origins to avoid overlap. Place upstream nodes (clients) at low x and downstream nodes (databases) at high x.
+2. SPATIAL ORDERING: Assign x and y as relative ordering hints only — the renderer computes exact pixel placement, so you do not need to avoid overlap or respect any canvas size. Use x for pipeline depth (clients and entry points low, databases and downstream stores high) and y for vertical grouping of components that sit alongside each other. Any positive numbers work; only their relative order is read.
 3. ARCHITECTURE REVIEW: Perform a realistic design review detailing strengths, potential single points of failure, missing caches/auth/load-balancers, and concrete recommendations.
 4. INFRASTRUCTURE CODE: Auto-generate valid Docker Compose / infrastructure.yaml code based on the discovered services.
 5. MERMAID DIAGRAM: Provide valid Mermaid flowchart syntax (e.g. graph LR or graph TD). Use only plain alphanumeric node ids and quoted labels. Never emit HTML tags, script, click, or style directives.

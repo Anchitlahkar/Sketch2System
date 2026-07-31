@@ -67,12 +67,38 @@ NODE_W = 208   // matches the `w-52` card class
 NODE_H = 132   // card height is fixed so edge endpoints are exact
 ```
 
-- The **system prompt** states the card size and the minimum spacing (260px horizontal,
-  190px vertical between origins) so the model lays out a non-overlapping graph.
+- The **layout engine** (`src/shared/autoLayout.ts`) computes every position.
 - The **validator** fills in `autoPosition(index)` for any node without usable
   coordinates, so every node has a position downstream.
 - The **canvas** absolutely positions each card at `(x, y)` inside an SVG coordinate
   space of the same dimensions.
+
+### Why the model does not place nodes
+
+The prompt used to demand exact pixel coordinates: `x` between 50 and 900, `y` between
+50 and 400, with 260px horizontal and 190px vertical spacing to avoid overlap. Do the
+arithmetic and that box holds **4 columns × 2 rows = 8 cards**. Every graph larger than
+eight nodes was an impossible instruction, so the model crammed nodes on top of each
+other and the edges vanished underneath them. A 13-node enterprise diagram was
+unreadable.
+
+No prompt wording fixes an arithmetically unsatisfiable constraint. The model is now
+asked for **relative ordering only** — `x` for pipeline depth, `y` for vertical
+grouping — which is the part it is genuinely good at, and `applyAutoLayout` computes
+exact placement:
+
+1. **Layering** — longest-path assignment. Nodes with no inbound edge start at layer 0;
+   every other node sits one layer past its deepest predecessor, so edges flow
+   consistently rightward. Nodes still unresolved after the Kahn sweep are in a cycle
+   and are seated after whichever predecessors did resolve.
+2. **Ordering within a layer** — seeded with the model's `y` ordering, then two
+   barycenter passes (forward and backward) to reduce edge crossings.
+3. **Coordinates** — fixed column and row gaps, with shorter columns centred against
+   the tallest so the graph reads as a band.
+
+Because spacing is arithmetic rather than a request, the result is overlap-free at any
+node count. Verified end-to-end against the `test/` fixtures: the 13-node graph lays out
+into 8 columns with zero card overlaps and zero label collisions.
 
 `edgeGeometry` anchors each edge to the facing sides of the two cards:
 
@@ -113,9 +139,38 @@ above). A candidate that would be clipped by the top of the canvas is skipped. O
 all three collide does the label fall back to the midpoint, ellipsized to the corridor,
 with the full text preserved in an SVG `<title>` tooltip.
 
-Across the bundled samples, a dense 4×2 grid with deliberately over-long labels, and a
-degenerate row flush against the canvas top, this places every label at full length with
-zero card overlaps.
+Placement runs in sequence and each label also avoids every label already placed, so
+parallel edges cannot stack their text on the same spot. Candidates slide along the edge
+as well as off it, and there is a second tier above and below for dense fan-outs.
+
+Across the bundled samples, a dense 4×2 grid with deliberately over-long labels, a
+degenerate row flush against the canvas top, and both live 12- and 13-node fixtures,
+this places every label at full length with zero card and zero label overlaps.
+
+## Graph editing
+
+The canvas is editable, not just a viewer. Nodes and edges live in `analysisResult`, so
+every edit flows into the export and the `architecture.json` artifact.
+
+| Action | How |
+| --- | --- |
+| Move a node | Drag it. Position commits on pointer-up. |
+| Add a component | Toolbar `+`, or the button on the empty canvas |
+| Delete | Select, then toolbar bin or <kbd>Delete</kbd> |
+| Connect two nodes | Toolbar link icon, click source then target |
+| Select / delete an edge | Click the line, then <kbd>Delete</kbd> |
+| Rename | Edit the name field in the selection bar |
+| Re-arrange | Toolbar grid icon re-runs the layered layout |
+| Zoom | Buttons, or <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + wheel |
+| Full screen | Toolbar — hides the capture and editor panes |
+
+Two details worth noting. While a node is being dragged it renders from local state and
+only commits on pointer-up, so a pointermove does not round-trip through the parent on
+every frame. And auto-fit is suppressed during a drag: the bounds shift as the node
+moves, and refitting would rescale the canvas under the cursor.
+
+Edge paths carry an invisible 14px-wide companion stroke purely for hit-testing — a 2px
+line is far too thin to click reliably.
 
 ### Flex sizing
 

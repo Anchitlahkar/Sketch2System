@@ -100,13 +100,20 @@ export function edgeGeometry(
 
 const LABEL_H = 15;
 
-function intersectsAnyCard(
-  rect: { x: number; y: number; w: number; h: number },
-  nodes: ReadonlyArray<{ x: number; y: number }>,
-): boolean {
-  return nodes.some(
-    (n) => rect.x < n.x + NODE_W && rect.x + rect.w > n.x && rect.y < n.y + NODE_H && rect.y + rect.h > n.y,
-  );
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function overlaps(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function blocked(rect: Rect, nodes: ReadonlyArray<{ x: number; y: number }>, obstacles: ReadonlyArray<Rect>): boolean {
+  const hitsCard = nodes.some((n) => overlaps(rect, { x: n.x, y: n.y, w: NODE_W, h: NODE_H }));
+  return hitsCard || obstacles.some((o) => overlaps(rect, o));
 }
 
 export interface LabelPlacement {
@@ -137,19 +144,28 @@ export function labelPlacement(
   to: { x: number; y: number },
   nodes: ReadonlyArray<{ x: number; y: number }>,
   textWidth: number,
+  /** Rects already claimed by earlier labels — labels must not stack on each other either. */
+  obstacles: ReadonlyArray<Rect> = [],
 ): LabelPlacement | null {
   const { labelX, labelY, labelBudget: corridor } = edgeGeometry(from, to);
 
-  const candidates = [
+  // Slide along the edge as well as off it: on a dense graph the midpoint is often
+  // taken by another label even when there is room a little to either side.
+  const xCandidates = [labelX, labelX - textWidth * 0.6, labelX + textWidth * 0.6];
+  const yCandidates = [
     labelY,
     Math.min(from.y, to.y) - 8, // above the row
     Math.max(from.y, to.y) + NODE_H + 16, // below the row
+    Math.min(from.y, to.y) - 26, // a second tier above, for parallel edges
+    Math.max(from.y, to.y) + NODE_H + 34, // a second tier below
   ];
 
-  for (const y of candidates) {
+  for (const y of yCandidates) {
     if (y - 9 < 0) continue; // would be clipped by the canvas top
-    const rect = { x: labelX - textWidth / 2, y: y - 9, w: textWidth, h: LABEL_H };
-    if (!intersectsAnyCard(rect, nodes)) return { x: labelX, y, budget: textWidth };
+    for (const x of xCandidates) {
+      const rect = { x: x - textWidth / 2, y: y - 9, w: textWidth, h: LABEL_H };
+      if (!blocked(rect, nodes, obstacles)) return { x, y, budget: textWidth };
+    }
   }
 
   return corridor >= MIN_LABEL_BUDGET ? { x: labelX, y: labelY, budget: corridor } : null;

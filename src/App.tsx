@@ -10,10 +10,12 @@ import { ProcessingOverlay } from './components/ProcessingOverlay';
 import { SideNav } from './components/SideNav';
 import { SAMPLE_SKETCHES } from './data/sampleDiagrams';
 import { exportAnalysis } from './lib/exportBundle';
+import { applyAutoLayout } from './shared/autoLayout';
 import { DEFAULT_GEMINI_MODEL, LOW_CONFIDENCE_THRESHOLD } from './shared/aiSpec';
 import { emptyAnalysis, normalizeAnalysis } from './shared/validate';
 import {
   AnalysisMeta,
+  ArchitectureEdge,
   ArchitectureNode,
   CompileResponseBody,
   SampleSketch,
@@ -24,7 +26,7 @@ const INITIAL_SAMPLE = SAMPLE_SKETCHES[0];
 
 export default function App() {
   const [analysisResult, setAnalysisResult] = useState<SketchAnalysisResult>(() =>
-    INITIAL_SAMPLE ? normalizeAnalysis(INITIAL_SAMPLE.data) : emptyAnalysis(),
+    INITIAL_SAMPLE ? applyAutoLayout(normalizeAnalysis(INITIAL_SAMPLE.data)) : emptyAnalysis(),
   );
   const [meta, setMeta] = useState<AnalysisMeta>({ source: 'sample' });
   const [isCompiling, setIsCompiling] = useState<boolean>(false);
@@ -33,6 +35,7 @@ export default function App() {
   const [selectedNode, setSelectedNode] = useState<ArchitectureNode | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: 'info' | 'error' } | null>(null);
   const [model, setModel] = useState<string>(DEFAULT_GEMINI_MODEL);
+  const [isCanvasFullscreen, setIsCanvasFullscreen] = useState<boolean>(false);
 
   const toastTimer = useRef<number | null>(null);
 
@@ -63,7 +66,9 @@ export default function App() {
   }, []);
 
   const applyResult = useCallback((result: SketchAnalysisResult, nextMeta: AnalysisMeta) => {
-    setAnalysisResult(result);
+    // Positions always come from the layered layout. The model is asked for relative
+    // ordering only; exact placement is arithmetic and belongs in code.
+    setAnalysisResult(applyAutoLayout(result));
     setMeta(nextMeta);
     setSelectedNode(null);
   }, []);
@@ -153,6 +158,32 @@ export default function App() {
     }
   }, [analysisResult, showToast]);
 
+  // Manual graph editing. Nodes and edges live in analysisResult, so drags, additions,
+  // and deletions all flow into the export and the JSON artifact.
+  const handleNodesChange = useCallback((nextNodes: ArchitectureNode[]) => {
+    setAnalysisResult((prev) => ({ ...prev, nodes: nextNodes }));
+  }, []);
+
+  const handleEdgesChange = useCallback((nextEdges: ArchitectureEdge[]) => {
+    setAnalysisResult((prev) => ({ ...prev, edges: nextEdges }));
+  }, []);
+
+  const handleRelayout = useCallback(() => {
+    setAnalysisResult((prev) => applyAutoLayout(prev));
+    showToast('Re-arranged the graph.');
+  }, [showToast]);
+
+  const handleRenameNode = useCallback(
+    (id: string, label: string) => {
+      setAnalysisResult((prev) => ({
+        ...prev,
+        nodes: prev.nodes.map((n) => (n.id === id ? { ...n, label } : n)),
+      }));
+      setSelectedNode((prev) => (prev && prev.id === id ? { ...prev, label } : prev));
+    },
+    [],
+  );
+
   const handleNewPipeline = useCallback(() => {
     applyResult(emptyAnalysis(), {
       source: 'sample',
@@ -160,6 +191,9 @@ export default function App() {
     });
     showToast('Cleared the canvas.');
   }, [applyResult, showToast]);
+
+  // The selected node is a snapshot; re-read it from state so edits stay in sync.
+  const selected = selectedNode ? (analysisResult.nodes.find((n) => n.id === selectedNode.id) ?? null) : null;
 
   const isPlaceholder = meta.source !== 'gemini';
   const lowConfidence = meta.source === 'gemini' && analysisResult.confidence < LOW_CONFIDENCE_THRESHOLD;
@@ -211,9 +245,13 @@ export default function App() {
             </div>
           )}
 
-          <div className="flex flex-col h-full w-full md:w-[400px] md:shrink-0 border-b md:border-b-0 border-white/10">
-            <CameraPane onCompile={handleCompileSketch} onSelectSample={handleSelectSample} isCompiling={isCompiling} />
-          </div>
+          {/* Full-screen canvas hides the capture and editor panes rather than
+              shrinking them, so the graph gets the entire work area. */}
+          {!isCanvasFullscreen && (
+            <div className="flex flex-col h-full w-full md:w-[400px] md:shrink-0 border-b md:border-b-0 border-white/10">
+              <CameraPane onCompile={handleCompileSketch} onSelectSample={handleSelectSample} isCompiling={isCompiling} />
+            </div>
+          )}
 
           <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#0A0C10] min-w-0">
             <div className="h-10 bg-[#15181E] border-b border-white/10 px-5 flex items-center justify-between font-mono text-xs shrink-0 gap-4">
@@ -270,25 +308,39 @@ export default function App() {
             <NodeCanvas
               nodes={analysisResult.nodes}
               edges={analysisResult.edges}
-              selectedNodeId={selectedNode?.id ?? null}
+              selectedNodeId={selected?.id ?? null}
               onSelectNode={setSelectedNode}
+              onNodesChange={handleNodesChange}
+              onEdgesChange={handleEdgesChange}
+              onRelayout={handleRelayout}
+              isFullscreen={isCanvasFullscreen}
+              onToggleFullscreen={() => setIsCanvasFullscreen((prev) => !prev)}
             />
 
-            {selectedNode && (
+            {selected && (
               <div className="bg-[#15181E] border-t border-white/10 px-5 py-2 flex items-center justify-between font-mono text-xs text-white/80 shrink-0 gap-4">
                 <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-blue-400 font-bold truncate">{selectedNode.label}</span>
-                  <span className="text-white/50 truncate">({selectedNode.tech})</span>
+                  <label className="text-white/40 shrink-0" htmlFor="node-label">
+                    name:
+                  </label>
+                  <input
+                    id="node-label"
+                    value={selected.label}
+                    onChange={(event) => handleRenameNode(selected.id, event.target.value)}
+                    className="bg-[#0F1115] border border-white/10 focus:border-blue-500/60 rounded px-2 py-1 text-blue-400 font-bold focus:outline-none min-w-0 w-56"
+                  />
+                  <span className="text-white/50 truncate">({selected.tech})</span>
                 </div>
                 <div className="flex items-center gap-4 text-[10px] shrink-0">
-                  <span>Port: {selectedNode.details.port ?? 'N/A'}</span>
-                  <span>Status: {selectedNode.details.status ?? 'unknown'}</span>
+                  <span>Port: {selected.details.port ?? 'N/A'}</span>
+                  <span>Status: {selected.details.status ?? 'unknown'}</span>
+                  <span className="text-white/30">Drag to move · Del to remove</span>
                   <button
                     type="button"
                     onClick={() => setSelectedNode(null)}
                     className="text-white/40 hover:text-blue-400 underline cursor-pointer"
                   >
-                    Clear selection
+                    Clear
                   </button>
                 </div>
               </div>
@@ -301,14 +353,16 @@ export default function App() {
               </div>
             )}
 
-            <CodeEditorPane
-              snippets={analysisResult.generated_code_snippets}
-              review={analysisResult.architecture_review}
-              roadmap={analysisResult.implementation_plan}
-              mermaidSyntax={analysisResult.mermaid}
-              activeTab={editorTab}
-              onTabChange={setEditorTab}
-            />
+            {!isCanvasFullscreen && (
+              <CodeEditorPane
+                snippets={analysisResult.generated_code_snippets}
+                review={analysisResult.architecture_review}
+                roadmap={analysisResult.implementation_plan}
+                mermaidSyntax={analysisResult.mermaid}
+                activeTab={editorTab}
+                onTabChange={setEditorTab}
+              />
+            )}
           </div>
         </main>
       </div>
