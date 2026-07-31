@@ -172,6 +172,32 @@ moves, and refitting would rescale the canvas under the cursor.
 Edge paths carry an invisible 14px-wide companion stroke purely for hit-testing — a 2px
 line is far too thin to click reliably.
 
+### Zoom, and why auto-fit must yield
+
+Auto-fit and manual zoom form a feedback loop if auto-fit is allowed to run freely:
+
+> zoom in → content grows → a scrollbar appears → the viewport's client size changes →
+> `ResizeObserver` fires → auto-fit runs → **zoom snaps back to the fitted value**
+
+Which reads to the user as "zooming does not work". The same loop can oscillate on its
+own, because fitting shrinks the content, which removes the scrollbar, which grows the
+viewport, which refits again.
+
+Two rules break it. A `userZoomedRef` flag latches on the first manual zoom and stops
+auto-fit from touching the level after that; auto-fit resumes only when the graph itself
+changes or the user presses *Fit to view*. And `fitToView` ignores changes under 0.01,
+so scrollbar-width feedback cannot ping-pong.
+
+Auto-fit is also keyed on the **graph identity** (the node id list), not on the bounds —
+bounds shift on every pointermove during a drag, which would refit continuously while
+dragging.
+
+Zoom is applied about an anchor — the cursor for <kbd>Ctrl</kbd>+wheel, the viewport
+centre for the buttons — by converting the anchor to content space, rescaling, and
+restoring scroll so the same point stays under it. Anchoring at the top-left corner
+instead makes the graph lurch away from wherever the user is looking. Wheel steps are
+multiplicative so a notch feels the same at 30% as at 300%.
+
 ### Flex sizing
 
 `min-w-0` is applied down the whole flex chain (`main` → right pane → canvas root).

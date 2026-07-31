@@ -179,36 +179,98 @@ export const NodeCanvas: React.FC<NodeCanvasProps> = ({
     });
   }, [edges, nodesById, positioned, selectedNodeId]);
 
+  // Latest zoom, readable synchronously inside pointer/wheel handlers.
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+
+  /**
+   * Zooms about an anchor point, defaulting to the centre of the viewport, and keeps
+   * whatever is under that anchor fixed. Anchoring at the top-left corner instead made
+   * the graph lurch away from wherever the user was looking.
+   */
+  const applyZoom = useCallback((next: number, anchorClientX?: number, anchorClientY?: number) => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    const previous = zoomRef.current;
+    const target = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number(next.toFixed(3))));
+    if (target === previous) return;
+
+    const rect = viewport.getBoundingClientRect();
+    const anchorX = (anchorClientX ?? rect.left + viewport.clientWidth / 2) - rect.left;
+    const anchorY = (anchorClientY ?? rect.top + viewport.clientHeight / 2) - rect.top;
+
+    // Content-space point currently under the anchor.
+    const contentX = (viewport.scrollLeft + anchorX) / previous;
+    const contentY = (viewport.scrollTop + anchorY) / previous;
+
+    zoomRef.current = target;
+    setZoom(target);
+
+    // Restore after the new size is laid out.
+    requestAnimationFrame(() => {
+      viewport.scrollLeft = contentX * target - anchorX;
+      viewport.scrollTop = contentY * target - anchorY;
+    });
+  }, []);
+
   const fitToView = useCallback(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
     const availableW = viewport.clientWidth - 32;
     const availableH = viewport.clientHeight - 32;
     if (availableW <= 0 || availableH <= 0) return;
-    const next = Math.min(1, availableW / bounds.width, availableH / bounds.height);
-    setZoom(Math.max(MIN_ZOOM, Number(next.toFixed(3))));
+    const next = Math.max(MIN_ZOOM, Math.min(1, availableW / bounds.width, availableH / bounds.height));
+    // Ignore hair-thin changes. Auto-fit shrinks the graph, which can remove a
+    // scrollbar, which grows the viewport, which would refit again — this stops that
+    // loop from oscillating.
+    setZoom((prev) => (Math.abs(prev - next) < 0.01 ? prev : Number(next.toFixed(3))));
   }, [bounds.height, bounds.width]);
 
-  // Refit when the graph or the viewport changes size. Not while dragging — the bounds
-  // shift as a node moves and the canvas would rescale under the cursor.
+  // Held in a ref so the auto-fit effects do not re-subscribe every time the bounds
+  // change (which happens on every pointermove during a drag).
+  const fitRef = useRef(fitToView);
+  fitRef.current = fitToView;
+
+  // True once the user zooms by hand. Auto-fit then stops touching their zoom level.
+  const userZoomedRef = useRef(false);
+
+  const zoomBy = useCallback(
+    (delta: number) => {
+      userZoomedRef.current = true;
+      applyZoom(zoomRef.current + delta);
+    },
+    [applyZoom],
+  );
+
+  const handleFitClick = useCallback(() => {
+    userZoomedRef.current = false;
+    fitRef.current();
+  }, []);
+
+  // Fit when the graph itself changes — not when its bounds shift because a node was
+  // dragged, and not on every resize.
+  const graphKey = useMemo(() => nodes.map((n) => n.id).join('|'), [nodes]);
+
   useLayoutEffect(() => {
-    if (drag) return;
-    fitToView();
+    userZoomedRef.current = false;
+    fitRef.current();
+  }, [graphKey]);
+
+  useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => {
-      if (!drag) fitToView();
+      // Only while the user has not taken manual control of the zoom. Otherwise the
+      // scrollbar that appears when zooming in resizes the viewport, refits, and snaps
+      // the zoom straight back.
+      if (!userZoomedRef.current) fitRef.current();
     });
     observer.observe(viewport);
     return () => observer.disconnect();
-  }, [drag, fitToView]);
+  }, []);
 
-  const zoomBy = useCallback(
-    (delta: number) => setZoom((prev) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number((prev + delta).toFixed(3))))),
-    [],
-  );
-
-  // Ctrl/⌘ + wheel zooms, matching the convention in map and design tools. Plain wheel
+  // Ctrl/⌘ + wheel zooms about the cursor, matching map and design tools. Plain wheel
   // still scrolls the viewport.
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -216,11 +278,14 @@ export const NodeCanvas: React.FC<NodeCanvasProps> = ({
     const onWheel = (event: WheelEvent) => {
       if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
-      zoomBy(event.deltaY < 0 ? 0.1 : -0.1);
+      userZoomedRef.current = true;
+      // Multiplicative so each notch feels the same at any zoom level.
+      const factor = Math.exp(-event.deltaY * 0.0015);
+      applyZoom(zoomRef.current * factor, event.clientX, event.clientY);
     };
     viewport.addEventListener('wheel', onWheel, { passive: false });
     return () => viewport.removeEventListener('wheel', onWheel);
-  }, [zoomBy]);
+  }, [applyZoom]);
 
   /** Pointer position in canvas units, accounting for zoom and scroll. */
   const toCanvasPoint = useCallback((clientX: number, clientY: number) => {
@@ -382,7 +447,7 @@ export const NodeCanvas: React.FC<NodeCanvasProps> = ({
         <button type="button" onClick={() => zoomBy(-0.15)} className={toolButton} title="Zoom out" aria-label="Zoom out">
           <ZoomOut className="w-4 h-4" />
         </button>
-        <button type="button" onClick={fitToView} className={toolButton} title="Fit to view" aria-label="Fit to view">
+        <button type="button" onClick={handleFitClick} className={toolButton} title="Fit to view" aria-label="Fit to view">
           <Maximize2 className="w-4 h-4" />
         </button>
         <button
