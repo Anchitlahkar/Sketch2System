@@ -8,18 +8,34 @@ export interface NodeDetails {
   framework?: string;
   image?: string;
   cpu?: string;
+  memory?: string;
   env?: Record<string, string>;
-  [key: string]: any;
+  [key: string]: unknown;
 }
+
+export const NODE_TYPES = [
+  'frontend',
+  'backend',
+  'database',
+  'gateway',
+  'cache',
+  'queue',
+  'auth',
+  'external',
+  'service',
+] as const;
+
+export type NodeType = (typeof NODE_TYPES)[number];
 
 export interface ArchitectureNode {
   id: string;
   label: string;
-  type: 'frontend' | 'backend' | 'database' | 'gateway' | 'cache' | 'queue' | 'auth' | 'external' | 'service';
+  type: NodeType;
   tech: string;
   details: NodeDetails;
-  x?: number;
-  y?: number;
+  /** Logical canvas coordinates. Always present after validation. */
+  x: number;
+  y: number;
 }
 
 export interface ArchitectureEdge {
@@ -71,3 +87,39 @@ export interface SampleSketch {
   imageUrl: string;
   data: SketchAnalysisResult;
 }
+
+/** Where the currently displayed analysis came from. Drives the honesty banner. */
+export type AnalysisSource = 'gemini' | 'mock' | 'sample';
+
+export interface AnalysisMeta {
+  source: AnalysisSource;
+  /** Why a mock was served, when source === 'mock'. */
+  reason?: string;
+  model?: string;
+  /** Real measured round-trip, never fabricated. */
+  elapsedMs?: number;
+}
+
+/** Successful compile: the server reached Gemini, or knowingly served a mock. */
+export interface CompileSuccessBody {
+  ok: true;
+  source: 'gemini' | 'mock';
+  reason?: string;
+  model: string;
+  elapsedMs: number;
+  result: SketchAnalysisResult;
+}
+
+/**
+ * Failed compile. `result` may still carry a mock so the UI can degrade
+ * gracefully — but the non-2xx status and `source: 'mock'` keep it labelled.
+ */
+export interface CompileErrorBody {
+  ok: false;
+  code: string;
+  error: string;
+  source?: 'mock';
+  result?: SketchAnalysisResult;
+}
+
+export type CompileResponseBody = CompileSuccessBody | CompileErrorBody;

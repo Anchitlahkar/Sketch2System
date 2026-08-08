@@ -1,11 +1,12 @@
 import { SampleSketch } from '../types';
+import { MICROSERVICES_THUMB, RAG_THUMB } from './thumbnails';
 
 export const SAMPLE_SKETCHES: SampleSketch[] = [
   {
     id: 'microservices',
     title: 'Microservices & DB Pipeline',
     description: 'React Client -> API Gateway -> Express Core Logic -> Postgres DB + Redis Cache',
-    imageUrl: 'https://lh3.googleusercontent.com/aida-public/AB6AXuBUSIcaNGVFvTR3TfHnhe7fEfcGKbJ9rMjuDJU7D2dIcF54NPkQ5s9Bzz4kck2llzCvnJxRgPpkfc3CsATe3dARAQETfxi4ej1czueQxx_OnEIBWkLFfX9rUpccjFPAr_fTE8q1WD26NfbjFPIH5yoWwTDMLULLNKa3E2HM_H3VWyaGUxjO8SJveCjg2c8X4qnsKCTtEht9DDnBM69NPXfJdR_gvNrxHxiKjNVUf3toR2lcRNu9FW4o',
+    imageUrl: MICROSERVICES_THUMB,
     data: {
       title: 'Microservices Infrastructure v2',
       summary: 'A standard 3-tier microservice architecture featuring a React SPA client connecting through an NGINX API Gateway with JWT validation, routed to an Express.js Core Backend paired with PostgreSQL and Redis cache.',
@@ -142,7 +143,7 @@ services:
     id: 'rag_ai_pipeline',
     title: 'Serverless RAG AI Architecture',
     description: 'User Request -> Fastify Server -> Gemini 3.6 Flash -> Vector Search DB + Storage',
-    imageUrl: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCCwOPU0pIS3LS0vcFpExR5CkOGYsdZ-T7QUoK2klKwsvnUO37MiWCX9ChIi_xYRBZHq_UeWqOZzRke1sCtVUt-VsShu8YHbvnyhBQuzlAtj4i7NI0-ovuXkB7VgGTD1gPRaEfTqWGnZCzHDTTbRIQDydTg15dsMXK_UlB_sreMQQsHgvRHIBgKUSPilOoajxe1Hf2VFoe7lLmbwKauIBW0-4RiPA2cEgLQLK4oO8_CJgzT1JX4OQ8E',
+    imageUrl: RAG_THUMB,
     data: {
       title: 'Serverless RAG & Gemini AI System',
       summary: 'A high-throughput Retrieval-Augmented Generation pipeline. User queries enter an API server, generate embedding vectors, retrieve context from PGVector / Pinecone, and synthesize final grounded answers via Gemini 3.6 Flash.',
